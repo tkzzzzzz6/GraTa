@@ -1,8 +1,8 @@
 #!/bin/bash
 
-Device=3
-model_root=/media/userdisk0/zychen/GraTa-master/models
-data_root=/media/userdisk0/zychen/Datasets/Fundus
+Device=0
+model_root=./models
+data_root=./Datasets/Fundus
 Aux=ent
 Pse=consis
 
