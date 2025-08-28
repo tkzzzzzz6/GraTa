@@ -1,15 +1,20 @@
-batchgenerators==0.25.1
-imageio==2.35.1
-matplotlib==3.4.3
-MedPy==0.5.2
-mmcv==2.2.0
-numpy==1.21.2
-opencv_python==4.12.0.88
-pandas==2.0.3
-Pillow==11.3.0
-scikit_learn==1.3.2
-scipy==1.16.1
+# 更新为与 Python 3.8 兼容的版本
+batchgenerators>=0.25.1
+imageio>=2.35.1
+matplotlib>=3.3.0,<3.6.0
+MedPy>=0.5.2
+mmcv>=2.2.0
+numpy>=1.19.0,<1.25.0  # Python 3.8 兼容
+opencv_python>=4.5.0,<4.9.0
+pandas>=1.3.0,<2.2.0  # Python 3.8 兼容
+Pillow>=8.0.0,<10.0.0
+scikit_learn>=1.0.0,<1.4.0
+scipy>=1.7.0,<1.12.0  # Python 3.8 兼容
+seaborn>=0.11.0,<0.12.0  # 可视化库
 torch==1.8.1+cu111
 torchvision==0.9.1+cu111
-tqdm==4.61.2
-yacs==0.1.8
+torchaudio==0.8.1
+# if it is not installed, you can install it by the following command:
+# pip install torch==1.8.1+cu111 torchvision==0.9.1+cu111 torchaudio==0.8.1 -f https://download.pytorch.org/whl/torch_stable.html
+tqdm>=4.60.0,<4.70.0
+yacs>=0.1.8

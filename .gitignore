@@ -1,2 +1,10 @@
 Dataset/
 models/
+__pycache__/
+cuda_11.1.0_455.23.05_linux.run
+logs/
+.cursor/
+CLAUDE.md
+GEMINI.md
+SPCL/
+visualization_results/

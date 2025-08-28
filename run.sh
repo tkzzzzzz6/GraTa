@@ -1,8 +1,23 @@
 #!/bin/bash
 
+# # 激活 conda 虚拟环境
+# source ~/miniconda3/etc/profile.d/conda.sh
+# conda activate grata
+
+# 验证包版本
+# python -c "
+# import pandas as pd
+# import numpy as np
+# import torch
+# print('pandas version:', pd.__version__)
+# print('numpy version:', np.__version__)
+# print('PyTorch version:', torch.__version__)
+# print('CUDA available:', torch.cuda.is_available())
+# "
+
 Device=0
 model_root=./models
-data_root=./Datasets/Fundus
+data_root=./Dataset/Fundus
 Aux=ent
 Pse=consis
 

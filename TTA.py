@@ -1,6 +1,6 @@
 import torch
 import os
-os.environ["CUDA_VISIBLE_DEVICES"] = '3'
+import torch.nn as nn
 from networks.ResUnet import ResUnet
 from config import *
 from utils.metrics import calculate_metrics
@@ -12,28 +12,55 @@ from dataloaders.OPTIC_dataloader import OPTIC_dataset
 from dataloaders.convert_csv_to_list import convert_labeled_list
 from dataloaders.transform import collate_fn_wo_transform
 from custom_optimizers.grata import GraTa
+from tqdm import tqdm
+from utils.visualization import create_visualization_results
+
+
+# Logger class for training records
+class Logger(object):
+    def __init__(self, filename, stream):
+        self.terminal = stream
+        self.log = open(filename, 'a')
+
+    def write(self, message):
+        self.terminal.write(message)
+        self.log.write(message)
+        self.log.flush()
+
+    def flush(self):
+        self.terminal.flush()
+        self.log.flush()
 
 
 torch.set_num_threads(1)
 
 
 def print_information(config):
+    print('=' * 50)
+    print('TRAINING CONFIGURATION')
+    print('=' * 50)
     print('Model Root: ', config.path_save_model)
-    print('GPUs: ', torch.cuda.device_count())
-    print('time: ', config.time_now)
-    print('source domain: ', config.Source_Dataset)
-    print('target domain: ', config.Target_Dataset)
-    print('model: ' + str(config.model_type))
-
-    print('input size: ', config.image_size)
-    print('batch size: ', config.batch_size)
-
-    print('optimizer: ', config.optimizer)
-    print('lr: ', config.lr)
-
-    print('auxiliary loss: ', config.aux_loss)
-    print('pseudo loss: ', config.pse_loss)
-    print('***' * 10)
+    print('Device: ', config.device)
+    print('CUDA Available: ', torch.cuda.is_available())
+    if torch.cuda.is_available():
+        print('GPU Count: ', torch.cuda.device_count())
+        print('Current GPU: ', torch.cuda.current_device())
+        print('GPU Name: ', torch.cuda.get_device_name(0))
+        print('CUDA Version: ', torch.version.cuda)
+    else:
+        print('Using CPU for training')
+    print('PyTorch Version: ', torch.__version__)
+    print('Time: ', config.time_now)
+    print('Source Domain: ', config.Source_Dataset)
+    print('Target Domain: ', config.Target_Dataset)
+    print('Model: ' + str(config.model_type))
+    print('Input Size: ', config.image_size)
+    print('Batch Size: ', config.batch_size)
+    print('Optimizer: ', config.optimizer)
+    print('Learning Rate: ', config.lr)
+    print('Auxiliary Loss: ', config.aux_loss)
+    print('Pseudo Loss: ', config.pse_loss)
+    print('=' * 50)
 
 
 def collect_params(model):
@@ -110,7 +137,9 @@ class TrainTTA:
 
     def build_model(self):
         self.model = ResUnet(resnet=self.backbone, num_classes=self.out_ch, pretrained=False).to(self.device)
-        checkpoint = torch.load(self.load_model + '/' + 'last-' + self.model_type + '.pth')
+        # 修复：添加 map_location 参数，支持 CPU 加载
+        checkpoint = torch.load(self.load_model + '/' + 'last-' + self.model_type + '.pth', 
+                               map_location=self.device)
         self.model.load_state_dict(checkpoint, strict=False)
 
         para = collect_params(self.model)
@@ -136,7 +165,9 @@ class TrainTTA:
             )
         else:
             raise NotImplementedError("ERROR: no such optimizer {}!".format(self.optim))
-        self.optimizer = GraTa(para, base_optimizer, self.model, device=self.device)
+        # 传递num_classes参数给GraTa优化器
+        self.optimizer = GraTa(para, base_optimizer, self.model, device=self.device, 
+                              num_classes=self.out_ch)
 
     def print_network(self):
         num_params = 0
@@ -148,7 +179,15 @@ class TrainTTA:
         metric_dict = ['Disc_Dice', 'Disc_ASSD', 'Cup_Dice', 'Cup_ASSD']
 
         metrics_test = [[], [], [], []]
-        for batch, data in enumerate(self.target_test_loader):
+        total_batches = len(self.target_test_loader)
+        print(f"Starting TTA training on {total_batches} batches...")
+        
+        # 使用 tqdm 显示进度条
+        pbar = tqdm(self.target_test_loader, desc=f"TTA Training", 
+                   total=total_batches, ncols=100, 
+                   bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]')
+        
+        for batch, data in enumerate(pbar):
             x, y = data['data'], data['mask']
             x = torch.from_numpy(x).to(dtype=torch.float32).to(self.device)
             y = torch.from_numpy(y).to(dtype=torch.float32).to(self.device)
@@ -174,6 +213,15 @@ class TrainTTA:
             for i in range(len(metrics)):
                 assert isinstance(metrics[i], list), "The metrics value is not list type."
                 metrics_test[i] += metrics[i]
+            
+            # 更新进度条描述，显示当前batch的指标
+            if batch % 5 == 0:  # 每5个batch更新一次描述
+                current_dice = np.mean([metrics_test[0][-1] if metrics_test[0] else 0, 
+                                      metrics_test[2][-1] if metrics_test[2] else 0])
+                pbar.set_postfix({
+                    'Dice': f'{current_dice:.3f}',
+                    'Batch': f'{batch+1}/{total_batches}'
+                })
 
         test_metrics_y = np.mean(metrics_test, axis=1)
         print_test_metric_mean = {}
@@ -186,13 +234,18 @@ class TrainTTA:
         for i in range(len(test_metrics_y)):
             print_test_metric_std[metric_dict[i]] = test_metrics_y[i]
         print("Test Metrics Std: ", print_test_metric_std)
+        
+        print(f"TTA training completed for {config.Target_Dataset}")
+        print("=" * 50)
         return print_test_metric_mean
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--aux_loss', type=str, default='ent', help='consis/ent/recon/rotate/supres/denoise')   # auxiliary loss
-    parser.add_argument('--pse_loss', type=str, default='consis', help='consis/ent/recon/rotate/supres/denoise')    # pseudo loss
+    parser.add_argument('--aux_loss', type=str, default='ent', 
+                        help='consis/ent/recon/rotate/supres/denoise/pixel_cl/enhanced_pseudo')   # auxiliary loss
+    parser.add_argument('--pse_loss', type=str, default='consis', 
+                        help='consis/ent/recon/rotate/supres/denoise/pixel_cl/enhanced_pseudo')    # pseudo loss
 
     parser.add_argument('--Source_Dataset', type=str,
                         help='RIM_ONE_r3/REFUGE/ORIGA/REFUGE_Valid/Drishti_GS')
@@ -218,20 +271,71 @@ if __name__ == '__main__':
     parser.add_argument('--dataset_root', type=str)
     parser.add_argument('--path_save_log', type=str, required=False, default='./logs/')
     
+    # 智能选择设备
     if torch.cuda.is_available():
-        parser.add_argument('--device', type=str, required=False, default='cuda:0')
+        # 检查可用的 GPU 数量
+        gpu_count = torch.cuda.device_count()
+        if gpu_count > 0:
+            # 选择第一个可用的 GPU
+            default_device = 'cuda:0'
+            print(f"Found {gpu_count} GPU(s), using {default_device}")
+        else:
+            default_device = 'cpu'
+            print("No GPU available, using CPU")
     else:
-        parser.add_argument('--device', type=str, required=False, default='cpu')
+        default_device = 'cpu'
+        print("CUDA not available, using CPU")
+    
+    parser.add_argument('--device', type=str, required=False, default=default_device)
     config = parser.parse_args()
     
     targets = ['RIM_ONE_r3', 'REFUGE', 'ORIGA', 'REFUGE_Valid', 'Drishti_GS']
     targets.remove(config.Source_Dataset)
     dice_score = 0
-    for config.Target_Dataset in targets:
+    results_dict = {}  # 存储所有域的评估结果
+    
+    print(f"Starting TTA evaluation for {config.Source_Dataset} on {len(targets)} target domains")
+    print("=" * 50)
+    
+    # 使用 tqdm 显示总体进度
+    overall_pbar = tqdm(targets, desc=f"Overall Progress ({config.Source_Dataset})", 
+                       ncols=100, position=0)
+    
+    for i, config.Target_Dataset in enumerate(overall_pbar):
+        overall_pbar.set_description(f"Processing {config.Target_Dataset}")
+        overall_pbar.set_postfix({'Progress': f'{i+1}/{len(targets)}'})
+        
         TTA = TrainTTA(config)
         metric = TTA.run()
         mean_dice = (metric['Disc_Dice'] + metric['Cup_Dice']) / 2
         dice_score += mean_dice
-    print(config.Source_Dataset + ': Dice Mean=' + str(dice_score / len(targets)))
-    print('\n\n\n')
+        
+        # 存储结果
+        results_dict[config.Target_Dataset] = metric
+        
+        # 更新总体进度条
+        overall_pbar.set_postfix({
+            'Progress': f'{i+1}/{len(targets)}',
+            'Current Dice': f'{mean_dice:.3f}',
+            'Avg Dice': f'{dice_score/(i+1):.3f}'
+        })
+    
+    overall_pbar.close()
+    
+    final_avg_dice = dice_score / len(targets)
+    print(f"\n{'='*60}")
+    print(f"FINAL RESULTS for {config.Source_Dataset}")
+    print(f"{'='*60}")
+    print(f"Average Dice Score: {final_avg_dice:.4f}")
+    print(f"Total Target Domains: {len(targets)}")
+    print(f"{'='*60}")
+    
+    # 生成可视化结果
+    print("\nGenerating visualization results...")
+    try:
+        create_visualization_results(results_dict, config.Source_Dataset)
+        print("Visualization completed successfully!")
+    except Exception as e:
+        print(f"Visualization failed: {e}")
+        print("Continuing without visualization...")
 

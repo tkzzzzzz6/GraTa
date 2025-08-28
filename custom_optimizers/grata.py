@@ -6,11 +6,12 @@ from dataloaders.aug import augmentation_spatial, augmentation_strong_style, aug
 from dataloaders.aug.spatial_aug import Rotate_and_Flip
 from dataloaders.aug.style_aug import augment_lowfreq
 from dataloaders.normalize import normalize_image_to_0_1
+from custom_optimizers.enhanced_losses import EnhancedMedicalSegLoss
 
 
 class GraTa(torch.optim.Optimizer):
     def __init__(self, params, base_optimizer, model, adaptive=False, perturb_eps=1e-12,
-                 grad_reduce='mean', device='cuda:0', **kwargs):
+                 grad_reduce='mean', device='cuda:0', num_classes=2, **kwargs):
         defaults = dict(adaptive=adaptive, **kwargs)
         super(GraTa, self).__init__(params, defaults)
         self.model = model
@@ -20,6 +21,9 @@ class GraTa(torch.optim.Optimizer):
         self.perturb_eps = perturb_eps
         self.init_lr = self.base_optimizer.param_groups[0]['lr']
         self.device = device
+        
+        # 集成增强损失模块
+        self.enhanced_losses = EnhancedMedicalSegLoss(num_classes=num_classes)
 
         # set up reduction for gradient across workers
         if grad_reduce.lower() == 'mean':
@@ -152,6 +156,32 @@ class GraTa(torch.optim.Optimizer):
         consis_loss.backward()
         return consis_loss
 
+    @torch.enable_grad()
+    def cal_pixel_contrastive_loss(self, data):
+        """SPCL像素级对比损失"""
+        x = torch.from_numpy(data['data']).to(dtype=torch.float32).to(self.device)
+        y = torch.from_numpy(data['mask']).to(dtype=torch.float32).to(self.device)
+        self.base_optimizer.zero_grad()
+        pred_logit, features = self.model(x)
+        
+        # 转换mask为长整型用于分类
+        masks = y.argmax(dim=1).long()
+        
+        pixel_cl_loss = self.enhanced_losses.pixel_contrastive_loss(features, pred_logit, masks)
+        pixel_cl_loss.backward()
+        return pixel_cl_loss
+    
+    @torch.enable_grad()  
+    def cal_enhanced_pseudo_loss(self, data):
+        """增强的伪标签损失"""
+        x = torch.from_numpy(data['data']).to(dtype=torch.float32).to(self.device)
+        self.base_optimizer.zero_grad()
+        pred_logit, features = self.model(x)
+        
+        enhanced_pseudo_loss = self.enhanced_losses.enhanced_pseudo_loss(features, pred_logit)
+        enhanced_pseudo_loss.backward()
+        return enhanced_pseudo_loss
+
     @torch.no_grad()
     def get_cosine(self):
         # calculate inner product
@@ -226,6 +256,9 @@ class GraTa(torch.optim.Optimizer):
             'rotate': self.cal_rotate_loss,
             'denoise': self.cal_denoise_loss,
             'supres': self.cal_supres_loss,
+            # 新增SPCL损失函数
+            'pixel_cl': self.cal_pixel_contrastive_loss,
+            'enhanced_pseudo': self.cal_enhanced_pseudo_loss,
         }
         with self.maybe_no_sync():
             # calculate auxiliary loss
